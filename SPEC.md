@@ -15,19 +15,18 @@ A local MCP server written in Rust that provides tools for searching KSL Classif
 | Transport | stdio | Local use with Kiro/Claude, zero network overhead |
 | HTTP Client | `reqwest` | Async, cookie support, custom headers |
 | HTML Parsing | `scraper` | CSS selector-based, fast, well-maintained |
-| Database | **SurrealDB embedded** | See [Database Decision](#database-decision) below |
+| Database | **SQLite** (`rusqlite`) | See [Database Decision](#database-decision) below |
+| Local UI Server | `axum` | Lightweight, async, serves interactive HTML reports |
 | Distribution | `cargo install` from git or crates.io | Single binary, no runtime deps |
 
 ### Database Decision
 
 | Option | Pros | Cons | Verdict |
 |--------|------|------|---------|
-| **SQLite** (`rusqlite`) | Battle-tested, SQL queries, great tooling, tiny footprint | Schema migrations, no native graph/document model | Good default |
-| **SurrealDB embedded** | Multi-model (document + graph + relational), SurrealQL, native Rust, schema-flexible, relationships between items/searches/price-history are first-class | Larger binary, younger project, heavier dependency | **Selected** — the relationship modeling (item → price_history, search → items, item → similar_items) maps naturally to SurrealDB's graph capabilities. Price tracking over time and pattern analysis benefit from its flexible schema. |
-| **redb** | Pure Rust, fast KV, ACID | No query language, manual indexing | Too low-level for our query needs |
-| **sled** | Pure Rust, embedded | Unstable API, no SQL, maintenance concerns | Not recommended |
-
-SurrealDB can run fully embedded (in-process, file-backed via RocksDB) with no external server. If SurrealDB proves too heavy during implementation, fallback to SQLite with `rusqlite` + manual schema.
+| **SQLite** (`rusqlite`) | Battle-tested, 25+ years, SQL queries, great tooling, tiny footprint (+1-2MB), fast compile, inspectable with any SQLite browser | Schema migrations needed | **Selected** — our data model is relational (tracked_item has many price_snapshots, saved_search has parameters). SQL handles price history, joins, and aggregates perfectly. |
+| **SurrealDB embedded** | Multi-model, flexible schema, graph queries | +20-30MB binary, slower compile, younger project, breaking changes | Overkill — the "graph" relationships are just foreign keys. Pattern analysis lives in the LLM, not the DB. |
+| **redb** | Pure Rust, fast KV, ACID | No query language, manual indexing | Too low-level |
+| **sled** | Pure Rust, embedded | Unstable API, maintenance concerns | Not recommended |
 
 ---
 
@@ -48,11 +47,62 @@ Implemented as a `RateLimiter` middleware wrapping the HTTP client.
 
 ---
 
+## Interactive Report UI
+
+Search results are presented via an interactive HTML report served from a temporary local HTTP server. This allows visual browsing of listings with photos and one-click item selection.
+
+### Flow
+
+1. User requests a search (via conversation)
+2. MCP server fetches results from KSL
+3. Server generates an HTML report with:
+   - Grid/list of listings with thumbnail photos, prices, descriptions, locations
+   - Checkbox next to each listing
+   - "Track Selected" submit button
+4. Server spawns a temporary `axum` listener on `127.0.0.1:{random_port}`
+5. Server opens the report URL in the default browser (`open` on macOS)
+6. User reviews listings visually, checks items of interest, clicks submit
+7. Form POSTs selections back to the local server
+8. Server processes selections (calls `track_item` internally for each)
+9. Listener shuts down
+10. MCP tool returns confirmation of which items were tracked
+
+### Implementation Details
+
+- **Server lifetime**: Spawns on tool call, shuts down after form submission or 10-minute timeout
+- **Port**: Random available port (OS-assigned), returned in the tool response URL
+- **HTML**: Self-contained single file (inline CSS/JS, no external deps)
+- **Photos**: Loaded directly from KSL's image CDN (no proxying needed, browser fetches them)
+- **Security**: Binds only to `127.0.0.1`, includes a one-time CSRF token in the form
+
+### MCP Tools for Report UI
+
+#### `browse_search_results`
+
+Run a search and open an interactive HTML report in the browser for visual review and item selection.
+
+**Parameters:** Same as `search_classifieds` or `search_cars` (keyword, category, price range, etc.) plus:
+```json
+{
+  "platform": "string (optional) — 'classifieds' | 'cars', default: 'classifieds'"
+}
+```
+
+**Returns:** URL of the report + confirmation message. After user submits selections, returns list of tracked items.
+
+#### `get_pending_selections`
+
+Check if the user has submitted selections from an open report. Used if the conversation continues before the user submits.
+
+**Returns:** List of selected listing IDs, or "no selections yet".
+
+---
+
 ## MCP Tools
 
 ### `search_classifieds`
 
-Search general classifieds listings.
+Search general classifieds listings. Returns structured data (for conversational use).
 
 **Parameters:**
 ```json
@@ -107,7 +157,7 @@ Search KSL Cars via the JSON API.
 
 ### `get_listing`
 
-Get full details for a specific listing.
+Get full details for a specific listing, including photos.
 
 **Parameters:**
 ```json
@@ -117,7 +167,7 @@ Get full details for a specific listing.
 }
 ```
 
-**Returns:** Full listing detail (title, description, price, photos[], location, seller_type, posted_date, listing_url, category, condition)
+**Returns:** Full listing detail (title, description, price, photos[] as base64 thumbnails, location, seller_type, posted_date, listing_url, category, condition)
 
 ---
 
@@ -146,6 +196,20 @@ Remove an item from the watch list.
 ```json
 {
   "listing_id": "string (required)"
+}
+```
+
+---
+
+### `mark_as_sold`
+
+Manually mark a tracked item as sold (for cases where auto-detection isn't clear).
+
+**Parameters:**
+```json
+{
+  "listing_id": "string (required)",
+  "sold_price": "number (optional) — final sale price if known"
 }
 ```
 
@@ -183,7 +247,7 @@ Get price change history for a tracked item.
 
 ### `research_item`
 
-Given a link or description of a desired item, search KSL to find matching listings. Handles cases where KSL listing titles/descriptions don't match standard product names.
+Given a link or description of a desired item, fetch the URL, extract product details (name, brand, model number, key specs, reference images), and search KSL for matching listings. Builds enough context to recognize the item from an image or description.
 
 **Parameters:**
 ```json
@@ -194,9 +258,15 @@ Given a link or description of a desired item, search KSL to find matching listi
 }
 ```
 
-**Returns:** Array of potential matches with relevance reasoning, listing details, and prices.
+**Returns:** 
+- Extracted product profile (name, brand, model, specs, reference image URLs)
+- Array of potential KSL matches with listing details and prices
 
-**Implementation notes:** This tool generates multiple search queries from the input (brand names, model numbers, common abbreviations, category keywords) and deduplicates results. The LLM calling this tool can then evaluate which results are actual matches.
+**Implementation:**
+1. Fetch the provided URL, extract product metadata (title, brand, model, images, specs)
+2. Generate multiple search queries (brand + model, common abbreviations, category keywords)
+3. Run searches against KSL with rate limiting
+4. Deduplicate and return results with the reference product profile for comparison
 
 ---
 
@@ -215,99 +285,123 @@ List available categories and subcategories.
 
 ---
 
+## Sold Detection
+
+Items are detected as sold/removed through two mechanisms:
+
+1. **Listing shows "sold" indicator** — KSL overlays "SOLD" on the listing image. When checking a tracked item, if the page contains a sold indicator → mark status as `sold`, record final price snapshot.
+
+2. **Listing returns 404/gone** — The listing has been removed entirely → mark status as `removed` (likely sold or expired).
+
+3. **Manual override** — `mark_as_sold` tool for cases where the user knows an item sold (e.g., they bought it).
+
+Both auto-detection cases trigger a final price snapshot recording.
+
+---
+
 ## Data Models
 
 ### Listing
 
-```
-listing {
-  id: string,
-  platform: 'classifieds' | 'cars',
-  title: string,
-  description: string,
-  price: number | null,
-  photos: [string],
-  location: { city: string, state: string, zip: string? },
-  category: string,
-  sub_category: string?,
-  seller_type: string,
-  posted_date: datetime?,
-  url: string,
-  favorites_count: number?,
-  // cars-specific
-  make: string?,
-  model: string?,
-  year: number?,
-  mileage: number?,
-}
+```sql
+CREATE TABLE listings (
+  id TEXT PRIMARY KEY,          -- KSL listing ID
+  platform TEXT NOT NULL,       -- 'classifieds' | 'cars'
+  title TEXT NOT NULL,
+  description TEXT,
+  price REAL,
+  photos TEXT,                  -- JSON array of URLs
+  city TEXT,
+  state TEXT,
+  zip TEXT,
+  category TEXT,
+  sub_category TEXT,
+  seller_type TEXT,
+  posted_date TEXT,
+  url TEXT NOT NULL,
+  favorites_count INTEGER,
+  -- cars-specific
+  make TEXT,
+  model TEXT,
+  year INTEGER,
+  mileage INTEGER,
+  -- metadata
+  first_seen_at TEXT NOT NULL,
+  last_fetched_at TEXT NOT NULL
+);
 ```
 
 ### TrackedItem
 
-```
-tracked_item {
-  id: string (auto),
-  listing_id: string,
-  platform: string,
-  notes: string?,
-  first_seen_price: number,
-  current_price: number,
-  first_seen_at: datetime,
-  last_checked_at: datetime,
-  status: 'active' | 'sold' | 'removed' | 'expired',
-  -> price_history: [PriceSnapshot],
-}
+```sql
+CREATE TABLE tracked_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id TEXT NOT NULL REFERENCES listings(id),
+  platform TEXT NOT NULL,
+  notes TEXT,
+  first_seen_price REAL,
+  current_price REAL,
+  first_seen_at TEXT NOT NULL,
+  last_checked_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'sold' | 'removed' | 'expired'
+  sold_price REAL,
+  UNIQUE(listing_id)
+);
 ```
 
 ### PriceSnapshot
 
-```
-price_snapshot {
-  id: string (auto),
-  tracked_item: reference,
-  price: number,
-  recorded_at: datetime,
-}
+```sql
+CREATE TABLE price_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id TEXT NOT NULL REFERENCES listings(id),
+  price REAL NOT NULL,
+  recorded_at TEXT NOT NULL
+);
 ```
 
 ### SavedSearch (Phase 2)
 
-```
-saved_search {
-  id: string (auto),
-  name: string,
-  parameters: json,
-  platform: string,
-  schedule: string?, // cron expression
-  last_run_at: datetime?,
-  created_at: datetime,
-}
+```sql
+CREATE TABLE saved_searches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  parameters TEXT NOT NULL,     -- JSON
+  platform TEXT NOT NULL,
+  schedule TEXT,                -- cron expression
+  last_run_at TEXT,
+  created_at TEXT NOT NULL
+);
 ```
 
 ---
 
-## Sales Pattern Analysis — Scope Discussion
+## Sales Pattern Analysis
 
-### In Scope (MVP)
+### Approach
 
-- Track how long items are listed before being sold/removed
-- Record price changes over time (how many drops before sale)
-- Store listing metadata (category, photos count, description length, seller type)
+The MCP server focuses on **data collection and storage**. Pattern analysis is performed by the LLM using the collected data via tools.
 
-### In Scope (Phase 2)
+### Data Collected (MVP)
 
-- Aggregate statistics: average days-to-sell by category
-- Price drop patterns: "items that drop 20%+ in first week sell within 3 days"
-- Identify underpriced listings (price significantly below category average)
+- Duration listed (first_seen_at → sold/removed timestamp)
+- Price change history (number of drops, magnitude, timing)
+- Listing metadata (category, photo count, description length, seller type, favorites count)
 
-### Potentially Out of Scope / Needs Discussion
+### Future: `get_sales_stats` Tool (Phase 2)
 
-- **Image analysis** — Identifying photo quality/style patterns that correlate with faster sales. This requires ML/vision capabilities beyond the MCP server itself. Could be a tool that returns image URLs for the LLM to analyze.
-- **Description NLP** — Analyzing which description styles/keywords correlate with sales. Same as above — the LLM calling the tools can do this analysis given the raw data.
-- **Seller reputation scoring** — Tracking seller history across listings. Requires identifying sellers across listings (member ID scraping).
-- **Market timing** — Day-of-week/time-of-day posting patterns. Requires posted_date precision which may not be available.
+Aggregate queries the LLM can request:
+- Average days-to-sell by category
+- Price drop frequency before sale
+- Listings with price significantly below category average
 
-**Recommendation:** The MCP server should focus on **data collection and storage**. The pattern analysis itself is best done by the LLM using the collected data via the tools. The server provides `get_price_history`, `list_tracked_items` (with duration/price data), and a future `get_sales_stats` tool. The intelligence layer (pattern recognition, recommendations) lives in the LLM conversation, not the server.
+### Out of Scope (LLM's Job)
+
+- Image quality analysis (LLM can view photos via `get_listing`)
+- Description effectiveness analysis (LLM reads descriptions directly)
+- Pattern recognition and recommendations (conversational)
+
+Future: Local GPU-accelerated ML models for report generation (separate phase).
 
 ---
 
@@ -317,7 +411,7 @@ Stored in `~/.config/ksl-mcp/config.toml`:
 
 ```toml
 [database]
-path = "~/.local/share/ksl-mcp/data"  # SurrealDB file store
+path = "~/.local/share/ksl-mcp/ksl.db"
 
 [rate_limit]
 min_delay_ms = 3000
@@ -325,7 +419,11 @@ max_delay_ms = 8000
 max_daily_requests = 500
 
 [scraping]
-user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ..."
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15"
+
+[report]
+open_browser = true
+timeout_seconds = 600  # 10 minutes
 ```
 
 ---
@@ -365,11 +463,17 @@ cargo install ksl-classifieds-mcp
   - A new listing matches a saved search
   - A tracked item is removed (likely sold)
 - **Export**: Export tracked data as CSV/JSON for external analysis
+- **`get_sales_stats`**: Aggregate statistics tool for pattern analysis
 
 ---
 
-## Open Questions
+## Resolved Decisions
 
-1. Should `research_item` attempt to parse external URLs (Amazon, etc.) to extract product details, or just pass the URL/description to the search as-is?
-2. For sales pattern analysis, do we need a `mark_as_sold` tool for manual confirmation, or rely on detecting listing removal?
-3. SurrealDB embedded adds ~20MB to binary size — acceptable?
+| Question | Decision |
+|----------|----------|
+| Database | SQLite — relational model fits, small binary, battle-tested |
+| `research_item` behavior | Fetches URL, extracts full product profile (name, brand, model, specs, images), generates multiple search queries | 
+| Sold detection | Auto-detect via "sold" indicator on page OR 404 response, plus manual `mark_as_sold` tool |
+| Result presentation | Interactive HTML report with photos + checkboxes, served via temporary local HTTP server |
+| Pattern analysis | Server collects data, LLM does the analysis. Future: local GPU ML models for reports |
+| Binary size | SQLite keeps it small (~5-10MB total binary) |
