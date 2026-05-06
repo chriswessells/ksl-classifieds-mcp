@@ -189,30 +189,32 @@ mod db_tests {
     }
 
     // R: graceful degradation — db_unavailable returns structured error
-    #[test]
-    fn test_db_unavailable_returns_error() {
+    #[tokio::test]
+    async fn test_db_unavailable_returns_error() {
         use crate::tools::tracking::{
             GetPriceHistoryInput, MarkAsSoldInput, TrackItemInput, UntrackItemInput,
         };
+        use crate::types::PlatformParam;
 
         let no_db: Option<crate::tools::tracking::DbHandle> = None;
 
         let result = crate::tools::tracking::list_tracked_items(&no_db);
         assert!(result.contains("error"));
 
+        // track_item is async and needs clients; test the db-unavailable path
+        let config = crate::config::Config::load();
+        let cc = crate::client::classifieds::ClassifiedsClient::new(&config);
+        let cars = crate::client::cars::CarsClient::new(&config);
         let result = crate::tools::tracking::track_item(
+            &cc,
+            &cars,
             &no_db,
             TrackItemInput {
                 listing_id: "x".to_string(),
-                platform: "classifieds".to_string(),
+                platform: PlatformParam::Classifieds,
                 notes: None,
-                title: "Test".to_string(),
-                url: "https://ksl.com/1".to_string(),
-                price: None,
-                city: None,
-                state: None,
             },
-        );
+        ).await;
         assert!(result.contains("error"));
 
         let result = crate::tools::tracking::untrack_item(

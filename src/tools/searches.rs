@@ -4,36 +4,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::searches::{self as db, SavedSearchParams};
 use crate::tools::tracking::DbHandle;
-use crate::types::{CarsSearchParams, ClassifiedsSearchParams, SortOrder};
+use crate::types::{CarsSearchParams, ClassifiedsSearchParams, PlatformParam, SortParam};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SaveSearchInput {
-    /// Name for this saved search
+    /// A memorable name for this saved search
     pub name: String,
-    /// Platform: "classifieds" or "cars"
-    pub platform: String,
+    /// Which platform to search
+    pub platform: PlatformParam,
+    /// Keyword (applies to both platforms)
     pub keyword: Option<String>,
+    /// Category name (classifieds only)
     pub category: Option<String>,
+    /// Minimum price in dollars
     pub price_from: Option<u32>,
+    /// Maximum price in dollars
     pub price_to: Option<u32>,
+    /// ZIP code for location-based search
     pub zip: Option<String>,
+    /// Radius in miles from ZIP code
     pub miles: Option<u32>,
-    pub sort: Option<String>,
+    /// Sort order (classifieds only)
+    pub sort: Option<SortParam>,
+    /// Car make (cars only, e.g. "Toyota")
     pub make: Option<String>,
+    /// Car model (cars only, e.g. "Camry")
     pub model: Option<String>,
+    /// Minimum year (cars only)
     pub year_from: Option<u32>,
+    /// Maximum year (cars only)
     pub year_to: Option<u32>,
+    /// Minimum mileage (cars only)
     pub mileage_from: Option<u32>,
+    /// Maximum mileage (cars only)
     pub mileage_to: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteSavedSearchInput {
+    /// ID of the saved search to delete (from ksl_list_saved_searches)
     pub id: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct RunSavedSearchInput {
+    /// ID of the saved search to run (from ksl_list_saved_searches)
     pub id: i64,
 }
 
@@ -113,16 +128,10 @@ pub fn get_saved_search_for_run(
 }
 
 fn build_params(input: &SaveSearchInput) -> SavedSearchParams {
-    let sort = input.sort.as_deref().and_then(|s| match s {
-        "Newest" => Some(SortOrder::Newest),
-        "Oldest" => Some(SortOrder::Oldest),
-        "PriceLow" => Some(SortOrder::PriceLow),
-        "PriceHigh" => Some(SortOrder::PriceHigh),
-        _ => None,
-    });
+    let sort = input.sort.as_ref().map(|s| s.to_sort_order());
 
-    if input.platform == "cars" {
-        SavedSearchParams::Cars(CarsSearchParams {
+    match input.platform {
+        PlatformParam::Cars => SavedSearchParams::Cars(CarsSearchParams {
             keyword: input.keyword.clone(),
             make: input.make.clone(),
             model: input.model.clone(),
@@ -135,9 +144,8 @@ fn build_params(input: &SaveSearchInput) -> SavedSearchParams {
             zip: input.zip.clone(),
             miles: input.miles,
             ..Default::default()
-        })
-    } else {
-        SavedSearchParams::Classifieds(ClassifiedsSearchParams {
+        }),
+        PlatformParam::Classifieds => SavedSearchParams::Classifieds(ClassifiedsSearchParams {
             keyword: input.keyword.clone(),
             category: input.category.clone(),
             price_from: input.price_from,
@@ -146,6 +154,6 @@ fn build_params(input: &SaveSearchInput) -> SavedSearchParams {
             miles: input.miles,
             sort,
             ..Default::default()
-        })
+        }),
     }
 }

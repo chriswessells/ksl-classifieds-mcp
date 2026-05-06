@@ -4,28 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 use crate::{
+    client::{KslClient, cars::CarsClient, classifieds::ClassifiedsClient},
     db::tracking as db,
-    types::{Listing, Platform},
+    types::{Listing, Platform, PlatformParam},
 };
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct TrackItemInput {
-    /// Listing ID to track
+    /// Listing ID to track (from search results)
     pub listing_id: String,
-    /// Platform: "classifieds" or "cars"
-    pub platform: String,
-    /// Optional notes
+    /// Which platform the listing is on
+    pub platform: PlatformParam,
+    /// Optional notes about why you're tracking this
     pub notes: Option<String>,
-    /// Listing title (required if listing not yet in DB)
-    pub title: String,
-    /// Listing URL
-    pub url: String,
-    /// Current price
-    pub price: Option<f64>,
-    /// City
-    pub city: Option<String>,
-    /// State
-    pub state: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -44,8 +35,16 @@ pub struct GetPriceHistoryInput {
 pub struct MarkAsSoldInput {
     /// Listing ID
     pub listing_id: String,
-    /// Optional sold price (uses current price if omitted)
+    /// Optional sold price (uses current tracked price if omitted)
     pub sold_price: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GetSalesStatsInput {
+    /// Filter stats to a specific platform
+    pub platform: Option<PlatformParam>,
+    /// Filter stats to a specific category
+    pub category: Option<String>,
 }
 
 pub type DbHandle = Arc<Mutex<crate::db::Db>>;
@@ -58,23 +57,65 @@ fn lock_err() -> String {
     r#"{"error":"database lock poisoned"}"#.to_string()
 }
 
-pub fn track_item(db: &Option<DbHandle>, input: TrackItemInput) -> String {
+pub async fn track_item(
+    classifieds_client: &ClassifiedsClient,
+    cars_client: &CarsClient,
+    db: &Option<DbHandle>,
+    input: TrackItemInput,
+) -> String {
     let Some(handle) = db else { return db_unavailable() };
+
+    let platform = input.platform.to_platform();
+    let listing = match &platform {
+        Platform::Classifieds => {
+            match classifieds_client.get_listing_detail(&input.listing_id).await {
+                Ok(detail) => Listing {
+                    id: detail.id,
+                    title: detail.title,
+                    price: detail.price,
+                    city: detail.city,
+                    state: detail.state,
+                    url: detail.url,
+                    image_url: None,
+                    category: None,
+                    favorites_count: None,
+                    platform: Platform::Classifieds,
+                },
+                Err(e) => return format!(r#"{{"error":"Failed to fetch listing: {e}"}}"#),
+            }
+        }
+        Platform::Cars => {
+            // Cars API doesn't have a single-listing endpoint; search by ID
+            let params = crate::types::CarsSearchParams {
+                keyword: Some(input.listing_id.clone()),
+                ..Default::default()
+            };
+            match cars_client.search_cars(&params).await {
+                Ok(results) => {
+                    match results.listings.into_iter().find(|l| l.id == input.listing_id) {
+                        Some(car) => Listing {
+                            id: car.id,
+                            title: car.title,
+                            price: car.price,
+                            city: car.city,
+                            state: car.state,
+                            url: car.url,
+                            image_url: car.photo_url,
+                            category: None,
+                            favorites_count: None,
+                            platform: Platform::Cars,
+                        },
+                        None => return format!(r#"{{"error":"Car listing {} not found"}}"#, input.listing_id),
+                    }
+                }
+                Err(e) => return format!(r#"{{"error":"Failed to fetch car listing: {e}"}}"#),
+            }
+        }
+    };
+
     let mut guard = match handle.lock() {
         Ok(g) => g,
         Err(_) => return lock_err(),
-    };
-    let listing = Listing {
-        id: input.listing_id,
-        title: input.title,
-        price: input.price,
-        city: input.city,
-        state: input.state,
-        url: input.url,
-        image_url: None,
-        category: None,
-        favorites_count: None,
-        platform: Platform::from_str(&input.platform),
     };
     match db::track_item(&mut guard.conn, &listing, input.notes.as_deref()) {
         Ok(row) => serde_json::to_string(&row).unwrap_or_else(|e| e.to_string()),
@@ -130,27 +171,17 @@ pub fn mark_as_sold(db: &Option<DbHandle>, input: MarkAsSoldInput) -> String {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct GetSalesStatsInput {
-    /// Optional platform filter: "classifieds" or "cars"
-    pub platform: Option<String>,
-    /// Optional category filter
-    pub category: Option<String>,
-}
-
 pub fn get_sales_stats(db: &Option<DbHandle>, input: GetSalesStatsInput) -> String {
-    let Some(handle) = db else {
-        return db_unavailable();
-    };
+    let Some(handle) = db else { return db_unavailable() };
     let guard = match handle.lock() {
         Ok(g) => g,
         Err(_) => return lock_err(),
     };
-    match crate::db::tracking::get_sales_stats(
-        &guard.conn,
-        input.platform.as_deref(),
-        input.category.as_deref(),
-    ) {
+    let platform_str = input.platform.as_ref().map(|p| match p {
+        PlatformParam::Classifieds => "classifieds",
+        PlatformParam::Cars => "cars",
+    });
+    match crate::db::tracking::get_sales_stats(&guard.conn, platform_str, input.category.as_deref()) {
         Ok(stats) => serde_json::to_string(&stats).unwrap_or_else(|e| e.to_string()),
         Err(e) => format!(r#"{{"error":"{e}"}}"#),
     }

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[non_exhaustive]
@@ -14,10 +15,42 @@ impl Platform {
             Platform::Cars => "cars",
         }
     }
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "cars" => Platform::Cars,
-            _ => Platform::Classifieds,
+}
+
+/// Platform to search on
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlatformParam {
+    Classifieds,
+    Cars,
+}
+
+impl PlatformParam {
+    pub fn to_platform(&self) -> Platform {
+        match self {
+            Self::Classifieds => Platform::Classifieds,
+            Self::Cars => Platform::Cars,
+        }
+    }
+}
+
+/// Sort order for search results
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SortParam {
+    Newest,
+    Oldest,
+    PriceLow,
+    PriceHigh,
+}
+
+impl SortParam {
+    pub fn to_sort_order(&self) -> SortOrder {
+        match self {
+            Self::Newest => SortOrder::Newest,
+            Self::Oldest => SortOrder::Oldest,
+            Self::PriceLow => SortOrder::PriceLow,
+            Self::PriceHigh => SortOrder::PriceHigh,
         }
     }
 }

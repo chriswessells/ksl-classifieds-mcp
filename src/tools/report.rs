@@ -5,26 +5,26 @@ use serde::{Deserialize, Serialize};
 use crate::{
     client::{KslClient, classifieds::ClassifiedsClient},
     report::ReportServer,
-    types::{ClassifiedsSearchParams, SortOrder},
+    types::{ClassifiedsSearchParams, SortParam},
 };
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct BrowseSearchResultsInput {
     /// Keyword to search for
     pub keyword: Option<String>,
-    /// Category name
+    /// Category name (use ksl_list_categories to see options)
     pub category: Option<String>,
     /// Minimum price in dollars
     pub price_from: Option<u32>,
     /// Maximum price in dollars
     pub price_to: Option<u32>,
-    /// ZIP code for radius search
+    /// ZIP code for location-based search
     pub zip: Option<String>,
-    /// Radius in miles
+    /// Radius in miles from ZIP code
     pub miles: Option<u32>,
-    /// Sort order: Newest, Oldest, PriceLow, PriceHigh
-    pub sort: Option<String>,
-    /// Page number (0-indexed)
+    /// Sort order for results
+    pub sort: Option<SortParam>,
+    /// Page number (1-indexed, default 1)
     pub page: Option<u32>,
 }
 
@@ -37,14 +37,7 @@ pub async fn browse_search_results(
         return format!(r#"{{"error":"Report server failed to start: {e}"}}"#);
     }
 
-    let sort = input.sort.as_deref().and_then(|s| match s {
-        "Newest" => Some(SortOrder::Newest),
-        "Oldest" => Some(SortOrder::Oldest),
-        "PriceLow" => Some(SortOrder::PriceLow),
-        "PriceHigh" => Some(SortOrder::PriceHigh),
-        _ => None,
-    });
-
+    let page_0 = input.page.map(|p| p.saturating_sub(1));
     let params = ClassifiedsSearchParams {
         keyword: input.keyword,
         category: input.category,
@@ -52,8 +45,8 @@ pub async fn browse_search_results(
         price_to: input.price_to,
         zip: input.zip,
         miles: input.miles,
-        sort,
-        page: input.page,
+        sort: input.sort.map(|s| s.to_sort_order()),
+        page: page_0,
         ..Default::default()
     };
 
