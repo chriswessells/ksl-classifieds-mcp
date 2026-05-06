@@ -1,0 +1,109 @@
+# COMPANION.yml — Structured Product Manifest
+# Updated by: Orchestrator, Chief Architect, Architect
+# Read by: All agents before performing work
+
+project:
+  name: "ksl-classifieds-mcp"
+  created: "2026-05-05"
+  status: development
+
+tenant:
+  chief_architect: chief-architect
+  red_lens: red-lens
+  teams:
+    - name: "core"
+      architect: architect
+      qa: qa
+      reviewers:
+        - security-reviewer
+        - scalability-reviewer
+        - resilience-reviewer
+        - reliability-reviewer
+        - maintainability-reviewer
+        - marketability-reviewer
+        - profitability-reviewer
+      developers: [developer]
+
+stages:
+  - id: stage-1
+    name: "Core Search"
+    status: in_progress
+    depends_on: []
+    spec_file: spec/requirements.md
+    design_file: design/stage-1.md
+    instructions_file: instructions/stage-1.md
+    phases: []
+
+  - id: stage-2
+    name: "Listing Details & Cars"
+    status: pending
+    depends_on: [stage-1]
+    spec_file: spec/requirements.md
+    design_file: design/stage-2.md
+    instructions_file: instructions/stage-2.md
+    phases: []
+
+  - id: stage-3
+    name: "Price Tracking"
+    status: pending
+    depends_on: [stage-2]
+    spec_file: spec/requirements.md
+    design_file: design/stage-3.md
+    instructions_file: instructions/stage-3.md
+    phases: []
+
+  - id: stage-4
+    name: "Interactive Reports"
+    status: pending
+    depends_on: [stage-3]
+    spec_file: spec/requirements.md
+    design_file: design/stage-4.md
+    instructions_file: instructions/stage-4.md
+    phases: []
+
+  - id: stage-5
+    name: "Saved Searches & Stats"
+    status: pending
+    depends_on: [stage-3]
+    spec_file: spec/requirements.md
+    design_file: design/stage-5.md
+    instructions_file: instructions/stage-5.md
+    phases: []
+
+gates:
+  spec_review:
+    status: passed
+    findings_critical: 6
+    findings_high: 21
+    resolved: true
+    resolved_at: "2026-05-05T20:55:00Z"
+    resolution_notes: |
+      All Critical/High findings resolved by chief architect:
+      - Transactions required for all multi-table writes
+      - Action hash recovery bounded (max 2 attempts) with separate counter
+      - Wire-format isolation via private raw types + From impls
+      - Platform/Status as typed enums
+      - XSS: askama auto-escaping + CSP headers
+      - SSRF: research_item removed from scope (LLM handles conversationally)
+      - HTTP timeouts added (connect 10s, total 30s)
+      - Report server: singleton lifecycle, selections persisted before 200
+      - track_item idempotent (dedup within 60s)
+      - Sold detection hardened (2 confirms for 404, no transition on 5xx)
+      - SQL injection: parameterized queries mandated
+      - CSRF: 128-bit CSPRNG, hidden field, server-side validation
+      - Supply chain: pin versions, commit Cargo.lock, cargo-audit in CI
+      - Test strategy: fixtures, trait-based HTTP mock, pure parsing functions
+      - Indexes on price_snapshots(listing_id, recorded_at)
+      - Per-endpoint backoff (not global)
+      - Graceful degradation on DB failure
+      - Stage 1 uses HTML scraping (stable) over RSC server actions (fragile)
+      - research_item removed (LLM already does this conversationally)
+      - Platform support documented (macOS/Linux, not Windows)
+      - Distribution via GitHub Releases + cargo install --locked
+  red_lens_final:
+    status: passed
+    findings_critical: 0
+    findings_high: 0
+    resolved: true
+    resolved_at: "2026-05-05T21:30:00Z"
+    resolution_notes: "Zero Critical/High findings. Codebase secure for personal local tool."

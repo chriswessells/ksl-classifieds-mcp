@@ -11,9 +11,35 @@ KSL Classifieds is Utah's largest local marketplace (similar to Craigslist/Faceb
 - **Watch** saved searches for new listings matching criteria
 - **Get** detailed listing information
 
+## Usage
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "ksl-classifieds": {
+      "command": "ksl-classifieds-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Install the binary:
+
+```sh
+cargo install --git <repo-url> --locked
+```
+
+## Tools
+
+- **search_classifieds** — Search KSL Classifieds by keyword, category, price, location, and more
+- **list_categories** — List all available categories
+
 ## Status
 
-🚧 **Under Development** — See [SPEC.md](./SPEC.md) for the design specification.
+🚧 **Stage 1 Complete** — Core search via MCP stdio transport.
 
 ## Architecture
 

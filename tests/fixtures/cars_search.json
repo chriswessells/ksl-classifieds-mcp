@@ -1,0 +1,40 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "12345678",
+        "title": "2005 Toyota Camry",
+        "price": 4500,
+        "make": "Toyota",
+        "model": "Camry",
+        "year": 2005,
+        "mileage": 145000,
+        "city": "Salt Lake City",
+        "state": "UT",
+        "zip": "84101",
+        "photo": "https://image.ksldigital.com/abc123.jpeg",
+        "description": "Clean title, runs great.",
+        "sellerType": "Private",
+        "createTime": "2024-01-15T10:00:00Z",
+        "modifyTime": "2024-01-15T10:00:00Z"
+      },
+      {
+        "id": 87654321,
+        "title": "2008 Honda Civic",
+        "price": 6000,
+        "make": "Honda",
+        "model": "Civic",
+        "year": 2008,
+        "mileage": 120000,
+        "city": "Provo",
+        "state": "UT",
+        "zip": "84601",
+        "photo": null,
+        "description": null,
+        "sellerType": "Dealer",
+        "createTime": "2024-01-16T08:00:00Z",
+        "modifyTime": "2024-01-16T08:00:00Z"
+      }
+    ]
+  }
+}
