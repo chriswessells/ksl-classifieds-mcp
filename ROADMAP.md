@@ -1,19 +1,28 @@
 # Roadmap
 
-## Now
+## Done
 
-- [ ] Define spec (tools, data models, storage)
-- [ ] Build MVP with stdio transport (local use)
+- [x] Define spec (tools, data models, storage)
+- [x] Build MVP with stdio transport (local use)
+- [x] KSL Classifieds search via HTML scraping
+- [x] KSL Cars search via JSON API
+- [x] Listing detail fetching
+- [x] Price tracking with SQLite persistence
+- [x] Interactive HTML report browser with CSRF protection
+- [x] Saved searches (save, list, delete, run)
+- [x] Aggregate sales statistics
+- [x] Rate limiting (per-endpoint backoff, daily cap)
+- [x] GitHub Actions CI (clippy + tests)
+- [x] Release workflow (macOS arm64 + Linux x64 binaries)
 
 ## Next
 
-- [ ] Price tracking with SQLite persistence
-- [ ] Saved search alerts (new listings matching criteria)
+- [ ] Background price polling via cron/Lambda
+- [ ] Sold/removed auto-detection during background checks
+- [ ] Push notifications (email, Discord)
 
 ## Later / Ideas
 
-- [ ] Deploy to Bedrock AgentCore Runtime (~$0.13/month for serverless MCP hosting with streamable-HTTP transport, pay-per-active-second pricing, OAuth built-in)
-- [ ] Background price polling via Lambda + EventBridge
-- [ ] Notification integrations (email, Discord, SMS)
-- [ ] KSL Cars support via `cars.ksl.com/nextjs-api/proxy` JSON API
+- [ ] Deploy to Bedrock AgentCore Runtime (streamable-HTTP transport)
 - [ ] Price trend analysis / deal scoring
+- [ ] Additional filter support (distance, seller type)

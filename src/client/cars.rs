@@ -238,7 +238,7 @@ mod tests {
         let arr = body["options"]["body"].as_array().unwrap();
 
         // Should be flat alternating key/value pairs
-        assert!(arr.len() % 2 == 0);
+        assert!(arr.len().is_multiple_of(2));
 
         // Find "make" key and check value
         let pos = arr.iter().position(|v| v == "make").unwrap();

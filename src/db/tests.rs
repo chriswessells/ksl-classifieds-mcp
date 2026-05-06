@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod db_tests {
     use rusqlite::Connection;
     use crate::db::tracking::{
         get_price_history, list_tracked_items, mark_as_sold, track_item, untrack_item,
