@@ -7,9 +7,9 @@ Project: ksl-classifieds-mcp
 Status: COMPLETE
 All Stages: passed
 Red Lens: passed (zero Critical/High)
-Tests: 35 passing
+Tests: 38 passing
 Clippy: clean
-Timestamp: 2026-05-05T21:30:00Z
+Timestamp: 2026-05-06T12:00:00Z
 ```
 
 ## What Was Built
@@ -21,7 +21,7 @@ A Rust MCP server for KSL Classifieds with 12 tools:
 | search_classifieds | 1 | Search KSL Classifieds via HTML scraping |
 | list_categories | 1 | 29 hardcoded categories |
 | get_listing | 2 | Fetch listing detail page |
-| search_cars | 2 | Search KSL Cars via JSON API |
+| search_cars | 2 | Search KSL Cars via HTML scraping |
 | track_item | 3 | Track a listing for price changes |
 | untrack_item | 3 | Stop tracking |
 | list_tracked_items | 3 | List all tracked items |

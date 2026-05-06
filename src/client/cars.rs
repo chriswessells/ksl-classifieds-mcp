@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use reqwest::header::{self, HeaderMap, HeaderValue};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use scraper::{Html, Selector};
 use tracing::warn;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     types::{CarListing, CarsSearchParams, CarsSearchResults, Platform},
 };
 
-const CARS_API_URL: &str = "https://cars.ksl.com/nextjs-api/proxy";
+const CARS_BASE_URL: &str = "https://cars.ksl.com/search";
 
 #[derive(Clone)]
 pub struct CarsClient {
@@ -24,8 +23,8 @@ impl CarsClient {
     pub fn new(config: &Config) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://cars.ksl.com"),
+            header::ACCEPT,
+            HeaderValue::from_static("text/html,application/xhtml+xml"),
         );
 
         let http = reqwest::Client::builder()
@@ -45,13 +44,12 @@ impl CarsClient {
     pub async fn search_cars(&self, params: &CarsSearchParams) -> Result<CarsSearchResults> {
         self.rate_limiter.acquire().await?;
 
-        let per_page = params.per_page.unwrap_or(24);
         let page = params.page.unwrap_or(1);
-        let body = build_request_body(params);
+        let url = build_search_url(params);
 
         let mut retries = 0u8;
         loop {
-            let resp = self.http.post(CARS_API_URL).json(&body).send().await;
+            let resp = self.http.get(&url).send().await;
 
             match resp {
                 Err(e) if retries < 2 => {
@@ -79,18 +77,16 @@ impl CarsClient {
                             continue;
                         }
                         return Err(KslError::Parse {
-                            context: format!("cars API returned {}", status),
+                            context: format!("cars site returned {}", status),
                         });
                     }
 
-                    let api_resp: CarsApiResponse =
-                        r.json().await.map_err(|e| KslError::Parse {
-                            context: format!("cars JSON parse: {}", e),
-                        })?;
+                    let html = r.text().await.map_err(|e| KslError::Parse {
+                        context: format!("cars response read: {}", e),
+                    })?;
 
-                    let items = api_resp.data.items;
-                    let has_more = items.len() >= per_page as usize;
-                    let listings = items.into_iter().map(|item| item.into_listing()).collect();
+                    let listings = parse_car_listings(&html)?;
+                    let has_more = listings.len() >= 24;
 
                     self.rate_limiter.record_success();
 
@@ -105,22 +101,20 @@ impl CarsClient {
     }
 }
 
-fn build_request_body(params: &CarsSearchParams) -> Value {
-    let mut arr: Vec<Value> = Vec::new();
+fn build_search_url(params: &CarsSearchParams) -> String {
+    let mut segments: Vec<String> = Vec::new();
 
     macro_rules! push_str {
         ($key:expr, $opt:expr) => {
             if let Some(v) = &$opt {
-                arr.push(json!($key));
-                arr.push(json!(v));
+                segments.push(format!("{}/{}", $key, v));
             }
         };
     }
     macro_rules! push_num {
         ($key:expr, $opt:expr) => {
             if let Some(v) = $opt {
-                arr.push(json!($key));
-                arr.push(json!(v));
+                segments.push(format!("{}/{}", $key, v));
             }
         };
     }
@@ -140,83 +134,132 @@ fn build_request_body(params: &CarsSearchParams) -> Value {
     push_str!("drive", params.drive);
     push_str!("fuel", params.fuel);
 
-    arr.push(json!("perPage"));
-    arr.push(json!(params.per_page.unwrap_or(24)));
-    arr.push(json!("page"));
-    arr.push(json!(params.page.unwrap_or(1)));
+    // KSL Cars uses 0-indexed pages
+    let page = params.page.unwrap_or(1).saturating_sub(1);
+    segments.push(format!("page/{}", page));
 
-    json!({
-        "endpoint": "/classifieds/cars/search/searchByUrlParams",
-        "options": {
-            "method": "POST",
-            "headers": {
-                "Content-Type": "application/json",
-                "User-Agent": "cars-node",
-                "X-App-Source": "frontline",
-                "X-DDM-EVENT-USER-AGENT": {},
-                "X-DDM-EVENT-ACCEPT-LANGUAGE": "en-US",
-                "X-MEMBER-ID": null,
-                "cookie": ""
-            },
-            "body": arr
+    if segments.is_empty() {
+        CARS_BASE_URL.to_string()
+    } else {
+        format!("{}/{}", CARS_BASE_URL, segments.join("/"))
+    }
+}
+
+fn parse_car_listings(html: &str) -> Result<Vec<CarListing>> {
+    let doc = Html::parse_document(html);
+
+    let listing_sel =
+        Selector::parse(r#"a[role="listitem"][href*="cars.ksl.com/listing/"]"#).unwrap();
+    let price_sel = Selector::parse(r#"[aria-label^="Price"]"#).unwrap();
+    let location_sel = Selector::parse(r#"[role="link"]"#).unwrap();
+
+    let mut listings = Vec::new();
+
+    for el in doc.select(&listing_sel) {
+        let href = el.value().attr("href").unwrap_or_default();
+        let id = href
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+
+        if id.is_empty() {
+            continue;
         }
-    })
-}
 
-// Wire types for response deserialization
-#[derive(Deserialize)]
-struct CarsApiResponse {
-    data: CarsApiData,
-}
+        let title = el
+            .value()
+            .attr("aria-label")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
 
-#[derive(Deserialize)]
-struct CarsApiData {
-    items: Vec<RawCarItem>,
-}
+        // Parse year/make/model from title (e.g. "1970 Volkswagen Beetle")
+        let (year, make, model) = parse_title_parts(&title);
 
-#[derive(Deserialize)]
-struct RawCarItem {
-    id: Option<Value>,
-    title: Option<String>,
-    price: Option<f64>,
-    make: Option<String>,
-    model: Option<String>,
-    year: Option<u32>,
-    mileage: Option<u32>,
-    city: Option<String>,
-    state: Option<String>,
-    zip: Option<String>,
-    photo: Option<String>,
-    description: Option<String>,
-    #[serde(rename = "sellerType")]
-    seller_type: Option<String>,
-}
+        // Price from aria-label="Price $X,XXX"
+        let price = el.select(&price_sel).next().and_then(|p| {
+            p.value()
+                .attr("aria-label")
+                .and_then(|l| l.strip_prefix("Price "))
+                .map(|s| s.replace(['$', ','], ""))
+                .and_then(|s| s.parse::<f64>().ok())
+        });
 
-impl RawCarItem {
-    fn into_listing(self) -> CarListing {
-        let id = match &self.id {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Number(n)) => n.to_string(),
-            _ => String::new(),
+        // Mileage from <span>X Miles</span>
+        let mileage = el.text().find_map(|t| {
+            let t = t.trim();
+            t.strip_suffix(" Miles")
+                .map(|m| m.replace(',', ""))
+                .and_then(|m| m.parse::<u32>().ok())
+        });
+
+        // Location from role="link" span containing "City, ST"
+        let (city, state) = el
+            .select(&location_sel)
+            .find_map(|loc| {
+                let text: String = loc.text().collect();
+                let text = text.trim().to_string();
+                if text.contains(", ") {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .map(|loc| {
+                let parts: Vec<&str> = loc.rsplitn(2, ", ").collect();
+                if parts.len() == 2 {
+                    (Some(parts[1].to_string()), Some(parts[0].to_string()))
+                } else {
+                    (Some(loc), None)
+                }
+            })
+            .unwrap_or((None, None));
+
+        // Photo from img alt matching title
+        let photo_url = el
+            .select(&Selector::parse("img").unwrap())
+            .next()
+            .and_then(|img| img.value().attr("src").map(String::from));
+
+        let url = if href.starts_with("http") {
+            href.to_string()
+        } else {
+            format!("https://cars.ksl.com{}", href)
         };
-        let url = format!("https://cars.ksl.com/listing/{}", id);
-        CarListing {
+
+        listings.push(CarListing {
             id,
-            title: self.title.unwrap_or_default(),
-            price: self.price,
-            make: self.make,
-            model: self.model,
-            year: self.year,
-            mileage: self.mileage,
-            city: self.city,
-            state: self.state,
-            zip: self.zip,
-            photo_url: self.photo,
-            description: self.description,
-            seller_type: self.seller_type,
+            title,
+            price,
+            make,
+            model,
+            year,
+            mileage,
+            city,
+            state,
+            zip: None,
+            photo_url,
+            description: None,
+            seller_type: None,
             url,
             platform: Platform::Cars,
-        }
+        });
+    }
+
+    Ok(listings)
+}
+
+fn parse_title_parts(title: &str) -> (Option<u32>, Option<String>, Option<String>) {
+    let parts: Vec<&str> = title.splitn(3, ' ').collect();
+    match parts.len() {
+        3 => (
+            parts[0].parse().ok(),
+            Some(parts[1].to_string()),
+            Some(parts[2].to_string()),
+        ),
+        2 => (parts[0].parse().ok(), Some(parts[1].to_string()), None),
+        _ => (None, None, None),
     }
 }
 
@@ -225,46 +268,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_request_body_flat_array() {
+    fn test_build_search_url() {
         let params = CarsSearchParams {
-            make: Some("Ford".into()),
-            price_from: Some(2000),
-            price_to: Some(5000),
+            make: Some("Volkswagen".into()),
+            year_from: Some(1950),
+            year_to: Some(1973),
             page: Some(1),
-            per_page: Some(24),
             ..Default::default()
         };
-        let body = build_request_body(&params);
-        let arr = body["options"]["body"].as_array().unwrap();
-
-        // Should be flat alternating key/value pairs
-        assert!(arr.len().is_multiple_of(2));
-
-        // Find "make" key and check value
-        let pos = arr.iter().position(|v| v == "make").unwrap();
-        assert_eq!(arr[pos + 1], "Ford");
-
-        let pos = arr.iter().position(|v| v == "priceFrom").unwrap();
-        assert_eq!(arr[pos + 1], 2000);
-
-        let pos = arr.iter().position(|v| v == "page").unwrap();
-        assert_eq!(arr[pos + 1], 1);
+        let url = build_search_url(&params);
+        assert_eq!(
+            url,
+            "https://cars.ksl.com/search/make/Volkswagen/yearFrom/1950/yearTo/1973/page/0"
+        );
     }
 
     #[test]
-    fn test_parse_cars_fixture() {
-        let json_str = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/cars_search.json"),
-        )
-        .expect("fixture file missing");
+    fn test_build_search_url_page_2() {
+        let params = CarsSearchParams {
+            make: Some("Ford".into()),
+            page: Some(2),
+            ..Default::default()
+        };
+        let url = build_search_url(&params);
+        assert_eq!(url, "https://cars.ksl.com/search/make/Ford/page/1");
+    }
 
-        let resp: CarsApiResponse = serde_json::from_str(&json_str).expect("parse failed");
-        assert!(!resp.data.items.is_empty());
+    #[test]
+    fn test_parse_title_parts() {
+        let (year, make, model) = parse_title_parts("1970 Volkswagen Beetle");
+        assert_eq!(year, Some(1970));
+        assert_eq!(make.as_deref(), Some("Volkswagen"));
+        assert_eq!(model.as_deref(), Some("Beetle"));
+    }
 
-        let listing = resp.data.items.into_iter().next().unwrap().into_listing();
-        assert!(!listing.id.is_empty());
-        assert!(listing.url.contains("cars.ksl.com/listing/"));
-        assert_eq!(listing.platform, Platform::Cars);
+    #[test]
+    fn test_parse_title_parts_with_trim() {
+        let (year, make, model) = parse_title_parts("1967 Volkswagen Beetle 60s Edition");
+        assert_eq!(year, Some(1967));
+        assert_eq!(make.as_deref(), Some("Volkswagen"));
+        assert_eq!(model.as_deref(), Some("Beetle 60s Edition"));
+    }
+
+    #[test]
+    fn test_parse_car_listings_from_fixture() {
+        // Test with a minimal HTML fixture
+        let html = r#"
+        <div role="list" aria-label="Search results">
+            <a class="group" aria-label="1970 Volkswagen Beetle" href="https://cars.ksl.com/listing/10574046" role="listitem">
+                <img alt="1970 Volkswagen Beetle" src="https://image.ksldigital.com/test.jpg" />
+                <span>39,034 Miles</span>
+                <span class="text-ksl-blue-500" role="link">Provo, UT</span>
+                <div aria-label="Price $7,000">$7,000</div>
+            </a>
+        </div>
+        "#;
+        let listings = parse_car_listings(html).unwrap();
+        assert_eq!(listings.len(), 1);
+        let l = &listings[0];
+        assert_eq!(l.id, "10574046");
+        assert_eq!(l.title, "1970 Volkswagen Beetle");
+        assert_eq!(l.price, Some(7000.0));
+        assert_eq!(l.mileage, Some(39034));
+        assert_eq!(l.city.as_deref(), Some("Provo"));
+        assert_eq!(l.state.as_deref(), Some("UT"));
+        assert_eq!(l.year, Some(1970));
+        assert_eq!(l.make.as_deref(), Some("Volkswagen"));
+        assert_eq!(l.model.as_deref(), Some("Beetle"));
+        assert_eq!(l.platform, Platform::Cars);
     }
 }
